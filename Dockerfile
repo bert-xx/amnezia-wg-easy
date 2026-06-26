@@ -1,49 +1,46 @@
-# As a workaround we have to build on nodejs 18
-# nodejs 20 hangs on build with armv6/armv7
-FROM docker.io/library/node:18-alpine AS build_node_modules
+# --- Стадия 1: Компилируем amneziawg-go из исходников ---
+FROM alpine AS build-go
+RUN apk add --no-cache git go make
+RUN git clone https://github.com/amnezia-vpn/amneziawg-go.git
+RUN cd amneziawg-go && make
 
-# Update npm to latest
-#RUN npm install -g npm@latest
+# --- Стадия 2: Компилируем утилиты wg и wg-quick из исходников ---
+FROM alpine AS build-c
+RUN apk add --no-cache git build-base linux-headers
+RUN git clone https://github.com/amnezia-vpn/amneziawg-tools.git
+RUN cd amneziawg-tools/src && make
 
-# Copy Web UI
-COPY src /app
+# --- Стадия 3: Собираем веб-интерфейс панели ---
+FROM node:20-alpine AS build-node
+WORKDIR /build
+COPY . .
+RUN npm ci --omit=dev
+
+# --- Стадия 4: Финальный запускной контейнер на чистом Alpine ---
+FROM alpine AS run
+RUN apk add --no-cache bash nodejs dpkg iptables iptables-legacy dumb-init
+
+# Настраиваем совместимость iptables для работы на ядрах Oracle Cloud
+RUN update-alternatives \
+  --install /usr/sbin/iptables iptables /usr/sbin/iptables-legacy 10 \
+  --slave /usr/sbin/iptables-restore iptables-restore /usr/sbin/iptables-legacy-restore \
+  --slave /usr/sbin/iptables-save iptables-save /usr/sbin/iptables-legacy-save || true
+
+# Копируем скомпилированные на прошлых шагах бинарники AmneziaWG
+COPY --from=build-go /amneziawg-go/amneziawg-go /usr/local/bin
+COPY --from=build-c /amneziawg-tools/src/wg /usr/local/bin
+COPY --from=build-c /amneziawg-tools/src/wg-quick/linux.bash /usr/local/bin/wg-quick
+
+# Настраиваем симлинки и пути для AmneziaWG
+RUN mkdir -p /etc/amnezia && ln -s /etc/wireguard /etc/amnezia/amneziawg
+RUN ln -s wg /usr/local/bin/awg
+
+# Копируем готовую веб-панель из вашего репозитория
+COPY --from=build-node /build/src /app
 WORKDIR /app
-RUN npm ci --omit=dev &&\
-    mv node_modules /node_modules
 
-# Copy build result to a new image.
-# This saves a lot of disk space.
-FROM amneziavpn/amnezia-wg:latest
-HEALTHCHECK CMD /usr/bin/timeout 5s /bin/sh -c "/usr/bin/wg show | /bin/grep -q interface || exit 1" --interval=1m --timeout=5s --retries=3
-COPY --from=build_node_modules /app /app
-
-# Move node_modules one directory up, so during development
-# we don't have to mount it in a volume.
-# This results in much faster reloading!
-#
-# Also, some node_modules might be native, and
-# the architecture & OS of your development machine might differ
-# than what runs inside of docker.
-COPY --from=build_node_modules /node_modules /node_modules
-
-# Copy the needed wg-password scripts
-COPY --from=build_node_modules /app/wgpw.sh /bin/wgpw
-RUN chmod +x /bin/wgpw
-
-# Install Linux packages
-RUN apk add --no-cache \
-    dpkg \
-    dumb-init \
-    iptables \
-    nodejs \
-    npm
-
-# Use iptables-legacy
-RUN update-alternatives --install /sbin/iptables iptables /sbin/iptables-legacy 10 --slave /sbin/iptables-restore iptables-restore /sbin/iptables-legacy-restore --slave /sbin/iptables-save iptables-save /sbin/iptables-legacy-save
-
-# Set Environment
 ENV DEBUG=Server,WireGuard
 
-# Run Web UI
-WORKDIR /app
-CMD ["/usr/bin/dumb-init", "node", "server.js"]
+# Запускаем через нативный dumb-init
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+CMD ["node", "server.js"]
