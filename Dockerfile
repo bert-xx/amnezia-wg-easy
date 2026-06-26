@@ -14,7 +14,8 @@ RUN cd amneziawg-tools/src && make
 FROM node:20-alpine AS build-node
 WORKDIR /build
 COPY . .
-RUN npm ci --omit=dev
+# Переходим в папку src (где лежит package.json) и устанавливаем зависимости там
+RUN cd src && npm ci --omit=dev
 
 # --- Стадия 4: Финальный запускной контейнер на чистом Alpine ---
 FROM alpine AS run
@@ -35,10 +36,8 @@ COPY --from=build-c /amneziawg-tools/src/wg-quick/linux.bash /usr/local/bin/wg-q
 RUN mkdir -p /etc/amnezia && ln -s /etc/wireguard /etc/amnezia/amneziawg
 RUN ln -s wg /usr/local/bin/awg
 
-# Копируем готовую веб-панель И библиотеки Node_modules
+# Копируем готовую веб-панель (папка node_modules скопируется автоматически, так как она внутри src)
 COPY --from=build-node /build/src /app
-COPY --from=build-node /build/node_modules /app/node_modules
-COPY --from=build-node /build/package.json /app/package.json
 WORKDIR /app
 
 ENV DEBUG=Server,WireGuard
