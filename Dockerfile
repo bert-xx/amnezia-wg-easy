@@ -35,8 +35,10 @@ COPY --from=build-c /amneziawg-tools/src/wg-quick/linux.bash /usr/local/bin/wg-q
 RUN mkdir -p /etc/amnezia && ln -s /etc/wireguard /etc/amnezia/amneziawg
 RUN ln -s wg /usr/local/bin/awg
 
-# Копируем готовую веб-панель из вашего репозитория
+# Копируем готовую веб-панель И библиотеки Node_modules
 COPY --from=build-node /build/src /app
+COPY --from=build-node /build/node_modules /app/node_modules
+COPY --from=build-node /build/package.json /app/package.json
 WORKDIR /app
 
 ENV DEBUG=Server,WireGuard
